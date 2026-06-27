@@ -159,7 +159,7 @@ button.primary {
 
 .progress-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 12px;
 }
@@ -220,6 +220,18 @@ button.primary {
   flex-wrap: wrap;
 }
 
+.slide-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.mini-button {
+  padding: 6px 8px;
+  font-size: 0.78rem;
+}
+
 .compact-controls .field {
   min-width: 0;
 }
@@ -247,8 +259,43 @@ button.primary {
   font-size: 0.78rem;
 }
 
-input[readonly] {
-  opacity: 0.85;
+.timing-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-top: 12px;
+}
+
+.timing-summary div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.timing-summary span {
+  color: var(--muted);
+}
+
+.timing-warning {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #7a4b00;
+  background: #2a1a00;
+  color: #ffd08a;
+}
+
+.timing-warning.hidden {
+  display: none;
+}
+
+.timing-toolbar {
+  margin-top: 12px;
+  margin-bottom: 0;
 }
 
 .preview-panel {
@@ -272,7 +319,6 @@ input[readonly] {
   margin-top: 8px;
 }
 
-#load-progress-bar,
 #preview-progress-bar,
 #export-progress-bar {
   width: 100%;
@@ -300,6 +346,41 @@ input[readonly] {
   display: none;
 }
 
+.quick-preview-dialog {
+  width: min(420px, 92vw);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.quick-preview-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.quick-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.quick-preview-body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 180px;
+}
+
+#quick-preview-image {
+  max-width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #000;
+}
+
 @media (max-width: 1180px) {
   .inputs-grid {
     grid-template-columns: 1fr;
@@ -313,6 +394,10 @@ input[readonly] {
   .progress-grid {
     grid-template-columns: 1fr;
     display: grid;
+  }
+
+  .timing-summary {
+    grid-template-columns: 1fr;
   }
 
   .status-card {

@@ -18,7 +18,6 @@
         </p>
       </div>
       <div class="status-card">
-        <div><span>Encoder</span><strong id="ffmpeg-status">Not loaded</strong></div>
         <div><span>Preview</span><strong id="preview-status">Idle</strong></div>
         <div><span>Export</span><strong id="export-status">Not started</strong></div>
       </div>
@@ -85,8 +84,8 @@
             </select>
           </label>
           <label class="field">
-            <span>Seconds per image (auto)</span>
-            <input id="duration-input" type="number" min="0.01" step="0.01" value="3" readonly />
+            <span>Default seconds per image</span>
+            <input id="duration-input" type="number" min="0.01" step="0.01" value="3" />
           </label>
           <label class="field">
             <span>Transition duration (sec)</span>
@@ -130,22 +129,28 @@
         <p class="note">
           Background music starts at the requested timestamp, fades in for the given duration,
           and is mixed beneath the primary overlay track. The overlay audio determines the
-          video length, and slide durations are auto-computed from that length.
+          final video length.
         </p>
+        <div class="timing-summary">
+          <div><span>Overlay audio</span><strong id="timing-overlay">Not loaded</strong></div>
+          <div><span>Requested stills</span><strong id="timing-stills">0.00s</strong></div>
+          <div><span>Requested transitions</span><strong id="timing-transitions">0.00s</strong></div>
+          <div><span>Requested total</span><strong id="timing-requested">0.00s</strong></div>
+          <div><span>Effective video</span><strong id="timing-effective">0.00s</strong></div>
+        </div>
+        <div class="toolbar timing-toolbar">
+          <button id="reset-equal-fit-btn" type="button">Reset all slide durations to equal fit</button>
+        </div>
+        <p id="timing-warning" class="timing-warning hidden"></p>
       </section>
 
       <section class="panel preview-panel">
         <h2>5. Preview and export</h2>
         <div class="toolbar">
-          <button id="load-ffmpeg-btn" type="button">Load encoder</button>
           <button id="preview-btn" type="button">Preview first 12 seconds</button>
           <button id="export-btn" type="button" class="primary">Export video</button>
         </div>
         <div class="progress-grid">
-          <label class="field">
-            <span>Encoder load</span>
-            <progress id="load-progress-bar" max="1" value="0"></progress>
-          </label>
           <label class="field">
             <span>Preview</span>
             <progress id="preview-progress-bar" max="1" value="0"></progress>
@@ -165,7 +170,19 @@
     </main>
   </div>
 
+  <dialog id="quick-preview-dialog" class="quick-preview-dialog">
+    <div class="quick-preview-header">
+      <strong id="quick-preview-title">Transition preview</strong>
+      <button id="quick-preview-close-btn" type="button">Close</button>
+    </div>
+    <div class="quick-preview-body">
+      <img id="quick-preview-image" alt="Generated quick transition preview" />
+    </div>
+    <a id="quick-preview-download" class="download-link hidden" download="transition-preview.gif">Download GIF</a>
+  </dialog>
+
   <script src="./vendor/jszip/package/dist/jszip.min.js"></script>
+  <script src="./vendor/gifjs/package/dist/gif.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

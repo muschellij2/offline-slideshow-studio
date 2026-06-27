@@ -32,17 +32,26 @@ const els = {
   musicVolumeInput: document.querySelector("#music-volume-input"),
   musicStartInput: document.querySelector("#music-start-input"),
   musicFadeInput: document.querySelector("#music-fade-input"),
-  loadFfmpegBtn: document.querySelector("#load-ffmpeg-btn"),
   previewBtn: document.querySelector("#preview-btn"),
   exportBtn: document.querySelector("#export-btn"),
   canvas: document.querySelector("#preview-canvas"),
   previewVideo: document.querySelector("#preview-video"),
-  loadProgressBar: document.querySelector("#load-progress-bar"),
   previewProgressBar: document.querySelector("#preview-progress-bar"),
   exportProgressBar: document.querySelector("#export-progress-bar"),
   logOutput: document.querySelector("#log-output"),
   downloadLink: document.querySelector("#download-link"),
-  ffmpegStatus: document.querySelector("#ffmpeg-status"),
+  quickPreviewDialog: document.querySelector("#quick-preview-dialog"),
+  quickPreviewTitle: document.querySelector("#quick-preview-title"),
+  quickPreviewImage: document.querySelector("#quick-preview-image"),
+  quickPreviewDownload: document.querySelector("#quick-preview-download"),
+  quickPreviewCloseBtn: document.querySelector("#quick-preview-close-btn"),
+  resetEqualFitBtn: document.querySelector("#reset-equal-fit-btn"),
+  timingOverlay: document.querySelector("#timing-overlay"),
+  timingStills: document.querySelector("#timing-stills"),
+  timingTransitions: document.querySelector("#timing-transitions"),
+  timingRequested: document.querySelector("#timing-requested"),
+  timingEffective: document.querySelector("#timing-effective"),
+  timingWarning: document.querySelector("#timing-warning"),
   previewStatus: document.querySelector("#preview-status"),
   exportStatus: document.querySelector("#export-status"),
 };
@@ -80,21 +89,13 @@ function setStatus(el, value) {
 
 function setProgress(kind, value) {
   const normalized = Math.max(0, Math.min(1, value));
-  if (kind === "load") els.loadProgressBar.value = normalized;
   if (kind === "preview") els.previewProgressBar.value = normalized;
   if (kind === "export") els.exportProgressBar.value = normalized;
 }
 
 function setButtonState(kind, disabled) {
-  if (kind === "load") els.loadFfmpegBtn.disabled = disabled;
   if (kind === "preview") els.previewBtn.disabled = disabled;
   if (kind === "export") els.exportBtn.disabled = disabled;
-}
-
-function updateEncoderDependentButtons() {
-  const disabled = !state.ffmpegLoaded || Boolean(state.ffmpegLoadPromise);
-  setButtonState("preview", disabled);
-  setButtonState("export", disabled);
 }
 
 function populateTransitions() {
@@ -128,27 +129,116 @@ function guessSortedSlides(files) {
     }));
 }
 
-function getPerImageDuration() {
-  if (!state.slides.length) {
-    return Number(els.durationInput.value) || 3;
+function formatSeconds(seconds) {
+  return `${seconds.toFixed(2)}s`;
+}
+
+function getRequestedStillsDuration() {
+  return state.slides.reduce((sum, slide) => sum + Math.max(0.01, Number(slide.duration) || 0), 0);
+}
+
+function getRequestedTransitionDuration() {
+  const transitionDuration = Math.max(0, Number(els.transitionDurationInput.value) || 0);
+  return transitionDuration * Math.max(0, state.slides.length - 1);
+}
+
+function getRequestedTimelineDuration() {
+  return getRequestedStillsDuration() + getRequestedTransitionDuration();
+}
+
+function getEffectiveVideoDuration() {
+  const requested = getRequestedTimelineDuration();
+  if (!state.voiceDuration || state.voiceDuration <= 0) {
+    return requested;
+  }
+  return state.voiceDuration;
+}
+
+function getTimingImpact() {
+  const overlay = state.voiceDuration || 0;
+  const requestedStills = getRequestedStillsDuration();
+  const requestedTransitions = getRequestedTransitionDuration();
+  const requestedTotal = requestedStills + requestedTransitions;
+  const effectiveTotal = state.voiceDuration && state.voiceDuration > 0 ? state.voiceDuration : requestedTotal;
+
+  let warning = "";
+
+  if (state.voiceDuration && requestedTotal > state.voiceDuration) {
+    const cutoff = state.voiceDuration;
+    const stillItems = buildTimeline({ transitionDuration: Math.max(0, Number(els.transitionDurationInput.value) || 0) }).items
+      .filter((item) => item.type === "still");
+    const truncated = stillItems.find((item) => cutoff > item.start && cutoff < item.end);
+    const unseen = stillItems.filter((item) => item.start >= cutoff);
+
+    const parts = [
+      `Requested timeline exceeds overlay by ${formatSeconds(requestedTotal - state.voiceDuration)}.`
+    ];
+
+    if (truncated) {
+      parts.push(`Slide ${truncated.slideIndex + 1} will be cut short.`);
+    }
+
+    if (unseen.length) {
+      const unseenIndexes = unseen.map((item) => item.slideIndex + 1);
+      parts.push(`Slides ${unseenIndexes.join(", ")} will not be fully reached.`);
+    }
+
+    warning = parts.join(" ");
+  } else if (state.voiceDuration && requestedTotal < state.voiceDuration) {
+    warning = `Requested timeline is shorter than the overlay by ${formatSeconds(state.voiceDuration - requestedTotal)}. The final slide will remain on screen for the extra time.`;
   }
 
-  if (!state.voiceDuration || state.voiceDuration <= 0) {
-    return Number(els.durationInput.value) || 3;
+  return {
+    overlay,
+    requestedStills,
+    requestedTransitions,
+    requestedTotal,
+    effectiveTotal,
+    warning,
+  };
+}
+
+function updateTimingSummary() {
+  const timing = getTimingImpact();
+  els.timingOverlay.textContent = state.voiceDuration ? formatSeconds(timing.overlay) : "Not loaded";
+  els.timingStills.textContent = formatSeconds(timing.requestedStills);
+  els.timingTransitions.textContent = formatSeconds(timing.requestedTransitions);
+  els.timingRequested.textContent = formatSeconds(timing.requestedTotal);
+  els.timingEffective.textContent = formatSeconds(timing.effectiveTotal);
+
+  if (timing.warning) {
+    els.timingWarning.textContent = timing.warning;
+    els.timingWarning.classList.remove("hidden");
+  } else {
+    els.timingWarning.textContent = "";
+    els.timingWarning.classList.add("hidden");
+  }
+}
+
+function initializeSlideDurations() {
+  const defaultDuration = Math.max(0.01, Number(els.durationInput.value) || 3);
+  state.slides.forEach((slide) => {
+    slide.duration = defaultDuration;
+  });
+}
+
+function setDefaultDurationFromOverlay(applyToSlides = false) {
+  if (!state.slides.length || !state.voiceDuration || state.voiceDuration <= 0) {
+    return;
   }
 
   const transitionDuration = Math.max(0, Number(els.transitionDurationInput.value) || 0);
   const transitionCount = Math.max(0, state.slides.length - 1);
-  const stillBudget = Math.max(0.01, state.voiceDuration - (transitionDuration * transitionCount));
-  return Math.max(0.01, stillBudget / state.slides.length);
-}
+  const availableStillTime = Math.max(0.01, state.voiceDuration - (transitionDuration * transitionCount));
+  const equalDuration = Math.max(0.01, availableStillTime / state.slides.length);
 
-function updateAutoDurations() {
-  const perImage = getPerImageDuration();
-  els.durationInput.value = perImage.toFixed(2);
-  state.slides.forEach((slide) => {
-    slide.duration = perImage;
-  });
+  els.durationInput.value = equalDuration.toFixed(2);
+
+  if (applyToSlides) {
+    state.slides.forEach((slide) => {
+      slide.duration = equalDuration;
+    });
+  }
 }
 
 async function loadImageForSlide(slide) {
@@ -168,7 +258,8 @@ async function handleImages(files) {
   cleanupUrls();
   const slides = guessSortedSlides(files);
   state.slides = await Promise.all(slides.map(loadImageForSlide));
-  updateAutoDurations();
+  initializeSlideDurations();
+  updateTimingSummary();
   renderImageList();
 }
 
@@ -318,16 +409,32 @@ function renderImageList() {
         </label>
         <label class="field">
           <span>Seconds</span>
-          <input data-role="duration" class="duration-input" type="number" value="${slide.duration.toFixed(2)}" readonly />
+          <input data-role="duration" class="duration-input" type="number" min="0.01" step="0.01" value="${slide.duration.toFixed(2)}" />
         </label>
+      </div>
+      <div class="slide-actions">
+        <button type="button" data-role="quick-preview" class="mini-button">Quick GIF</button>
       </div>
       <div class="drag-hint">Drag to reorder</div>
     `;
 
     const transitionSelect = meta.querySelector('[data-role="transition"]');
+    const quickPreviewButton = meta.querySelector('[data-role="quick-preview"]');
+    const durationInput = meta.querySelector('[data-role="duration"]');
 
     transitionSelect.addEventListener("change", (event) => {
       slide.transition = event.target.value;
+      updateTimingSummary();
+    });
+
+    durationInput.addEventListener("change", (event) => {
+      slide.duration = Math.max(0.01, Number(event.target.value) || 3);
+      event.target.value = slide.duration.toFixed(2);
+      updateTimingSummary();
+    });
+
+    quickPreviewButton.addEventListener("click", () => {
+      createSlideQuickPreview(index, quickPreviewButton).catch(handleError);
     });
 
     if (index === 0) {
@@ -558,6 +665,88 @@ function drawTimelineAt(time, timeline, settings) {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getQuickPreviewDimensions() {
+  return { width: 320, height: 180 };
+}
+
+function openQuickPreview(blob, filename, title) {
+  const url = URL.createObjectURL(blob);
+  state.objectUrls.push(url);
+  els.quickPreviewTitle.textContent = title;
+  els.quickPreviewImage.src = url;
+  els.quickPreviewDownload.href = url;
+  els.quickPreviewDownload.download = filename;
+  els.quickPreviewDownload.classList.remove("hidden");
+  els.quickPreviewDialog.showModal();
+}
+
+async function createSlideQuickPreview(index, button) {
+  if (!window.GIF) {
+    throw new Error("GIF preview library is not available.");
+  }
+
+  const slide = state.slides[index];
+  if (!slide) return;
+
+  const nextSlide = state.slides[index + 1] || slide;
+  const previousLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Building GIF...";
+
+  try {
+    const { width, height } = getQuickPreviewDimensions();
+    const offscreenCanvas = document.createElement("canvas");
+    offscreenCanvas.width = width;
+    offscreenCanvas.height = height;
+    const offscreenCtx = offscreenCanvas.getContext("2d");
+    const gif = new window.GIF({
+      workers: 2,
+      quality: 10,
+      width,
+      height,
+      workerScript: new URL("./vendor/gifjs/package/dist/gif.worker.js", window.location.href).toString(),
+    });
+
+    const quickSettings = {
+      width,
+      height,
+      fit: els.fitSelect.value,
+      transitionDuration: Math.max(0.2, Math.min(1.2, Number(els.transitionDurationInput.value) || 0.8)),
+    };
+
+    const holdFrames = 4;
+    const transitionFrames = slide.transition === "none" || nextSlide === slide ? 1 : 8;
+
+    for (let i = 0; i < holdFrames; i += 1) {
+      drawStillFrame(offscreenCtx, slide, quickSettings);
+      gif.addFrame(offscreenCanvas, { copy: true, delay: 120 });
+    }
+
+    if (nextSlide !== slide) {
+      for (let i = 0; i < transitionFrames; i += 1) {
+        const progress = transitionFrames === 1 ? 1 : i / (transitionFrames - 1);
+        renderTransitionFrame(offscreenCtx, slide, nextSlide, progress, quickSettings);
+        gif.addFrame(offscreenCanvas, { copy: true, delay: 90 });
+      }
+    }
+
+    const gifBlob = await new Promise((resolve, reject) => {
+      gif.on("finished", resolve);
+      gif.on("abort", () => reject(new Error("GIF generation was aborted.")));
+      gif.render();
+    });
+
+    openQuickPreview(
+      gifBlob,
+      `${slide.file.name.replace(/\.[^.]+$/, "")}-transition-preview.gif`,
+      `Quick GIF: ${slide.file.name}`
+    );
+  } finally {
+    button.disabled = false;
+    button.textContent = previousLabel;
+  }
 }
 
 async function createMixedAudioTrack(settings) {
@@ -1021,7 +1210,8 @@ async function loadSampleAssets() {
   state.voiceFile = await fileFromUrl(SAMPLE_ASSETS.voice);
   state.musicFile = await fileFromUrl(SAMPLE_ASSETS.music);
   state.voiceDuration = await getAudioDuration(state.voiceFile);
-  updateAutoDurations();
+  setDefaultDurationFromOverlay(true);
+  updateTimingSummary();
   renderImageList();
 
   setStatus(els.previewStatus, "Samples loaded");
@@ -1048,10 +1238,6 @@ async function runAutoMode() {
 
   try {
     await loadSampleAssets();
-
-    if (params.get("encoder") !== "0") {
-      await loadFfmpeg();
-    }
 
     if (params.get("autopreview") === "1") {
       await preview();
@@ -1084,7 +1270,7 @@ function bindEvents() {
     state.voiceFile = event.target.files?.[0] || null;
     if (!state.voiceFile) {
       state.voiceDuration = null;
-      updateAutoDurations();
+      updateTimingSummary();
       renderImageList();
       return;
     }
@@ -1092,7 +1278,8 @@ function bindEvents() {
     getAudioDuration(state.voiceFile)
       .then((duration) => {
         state.voiceDuration = duration;
-        updateAutoDurations();
+        setDefaultDurationFromOverlay(true);
+        updateTimingSummary();
         renderImageList();
       })
       .catch(handleError);
@@ -1113,16 +1300,24 @@ function bindEvents() {
   });
 
   els.loadSampleBtn.addEventListener("click", () => loadSampleAssets().catch(handleError));
-
-  els.transitionDurationInput.addEventListener("change", () => {
-    updateAutoDurations();
+  els.resetEqualFitBtn.addEventListener("click", () => {
+    setDefaultDurationFromOverlay(true);
+    updateTimingSummary();
     renderImageList();
   });
 
+  els.transitionDurationInput.addEventListener("change", () => {
+    updateTimingSummary();
+  });
+
+  els.durationInput.addEventListener("change", () => {
+    els.durationInput.value = String(Math.max(0.01, Number(els.durationInput.value) || 3));
+  });
+
   els.applyDefaultTransitionBtn.addEventListener("click", applyDefaultTransitionToAll);
-  els.loadFfmpegBtn.addEventListener("click", loadFfmpeg);
   els.previewBtn.addEventListener("click", () => preview().catch(handleError));
   els.exportBtn.addEventListener("click", () => exportVideo().catch(handleError));
+  els.quickPreviewCloseBtn.addEventListener("click", () => els.quickPreviewDialog.close());
 }
 
 function handleError(error) {
@@ -1137,5 +1332,6 @@ populateTransitions();
 bindEvents();
 setButtonState("preview", false);
 setButtonState("export", false);
-log("App ready. Load images, audio tracks, then preview or export.");
+updateTimingSummary();
+log("App ready. Load images or a ZIP, add audio, then preview or export.");
 runAutoMode().catch(handleError);
