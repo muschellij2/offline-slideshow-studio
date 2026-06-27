@@ -93,3 +93,4 @@ Useful flags:
 3. Add waveform preview and interactive audio trimming.
 4. Add project save/load as JSON.
 5. Add better order guessing from EXIF capture timestamps when available.
+
