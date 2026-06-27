@@ -57,27 +57,14 @@ const state = {
   ffmpegLoadPromise: null,
   dragIndex: null,
   objectUrls: [],
+  lastExportBlob: null,
+  lastPreviewBlob: null,
 };
 
 const SAMPLE_ASSETS = {
-  images: [
-    "../1900 Lawrence_reorg/1900 Lawrence-01.jpeg",
-    "../1900 Lawrence_reorg/1900 Lawrence-04.jpg",
-    "../1900 Lawrence_reorg/1900 Lawrence-05.JPG",
-    "../1900 Lawrence_reorg/1900 Lawrence-06.jpg",
-    "../1900 Lawrence_reorg/1900 Lawrence-07.PNG",
-    "../1900 Lawrence_reorg/1900 Lawrence-08.png",
-    "../1900 Lawrence_reorg/1900 Lawrence-09.JPG",
-    "../1900 Lawrence_reorg/1900 Lawrence-10.jpg",
-    "../1900 Lawrence_reorg/1900 Lawrence-11.jpg",
-    "../1900 Lawrence_reorg/1900 Lawrence-12.jpg",
-    "../1900 Lawrence_reorg/1900 Lawrence-13.jpg",
-    "../1900 Lawrence_reorg/1900 Lawrence-14.jpg",
-    "../1900 Lawrence_reorg/1900 Lawrence-15.jpg",
-    "../1900 Lawrence_reorg/1900 Lawrence-16.jpeg",
-  ],
-  voice: "../1900 Lawrence.wav",
-  music: "../MUSIC NUMBERED/1 A Motivation Corporate.wav",
+  imagesZip: "./example/images.zip",
+  voice: "./example/overlay.wav",
+  music: "./example/background.wav",
 };
 
 const canvasCtx = els.canvas.getContext("2d");
@@ -184,11 +171,92 @@ function cleanupUrls() {
   state.objectUrls = [];
 }
 
+function isZipFile(file) {
+  return file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip";
+}
+
+function isImageFilename(name) {
+  return /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name);
+}
+
+function isIgnoredZipEntry(name) {
+  const normalized = name.replace(/\\/g, "/");
+  const basename = normalized.split("/").at(-1) || normalized;
+  return normalized.startsWith("__MACOSX/") || basename.startsWith("._") || basename === ".DS_Store";
+}
+
+async function extractImagesFromZip(zipFile) {
+  if (!window.JSZip) {
+    throw new Error("JSZip is not available.");
+  }
+
+  log(`Reading ZIP archive: ${zipFile.name}`);
+  const zip = await window.JSZip.loadAsync(zipFile);
+  const entries = Object.values(zip.files)
+    .filter((entry) => !entry.dir && !isIgnoredZipEntry(entry.name) && isImageFilename(entry.name))
+    .sort((a, b) => naturalCompare(a.name, b.name));
+
+  if (!entries.length) {
+    throw new Error(`No supported image files found in ${zipFile.name}`);
+  }
+
+  const files = await Promise.all(entries.map(async (entry, index) => {
+    const blob = await entry.async("blob");
+    const filename = entry.name.split("/").at(-1) || `image-${index + 1}.png`;
+    return new File([blob], filename, {
+      type: blob.type || guessMimeTypeFromFilename(filename),
+      lastModified: Date.now() + index,
+    });
+  }));
+
+  return files;
+}
+
+function guessMimeTypeFromFilename(filename) {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".bmp")) return "image/bmp";
+  if (lower.endsWith(".avif")) return "image/avif";
+  return "application/octet-stream";
+}
+
+async function normalizeImageInputs(fileList) {
+  const files = [...fileList];
+  const expanded = [];
+
+  for (const file of files) {
+    if (isZipFile(file)) {
+      const zipImages = await extractImagesFromZip(file);
+      expanded.push(...zipImages);
+      continue;
+    }
+
+    if (file.type.startsWith("image/") || isImageFilename(file.name)) {
+      expanded.push(file);
+    }
+  }
+
+  if (!expanded.length) {
+    throw new Error("No supported image files were provided.");
+  }
+
+  return expanded;
+}
+
 function moveSlide(from, to) {
   if (to < 0 || to >= state.slides.length || from === to) return;
   const [slide] = state.slides.splice(from, 1);
   state.slides.splice(to, 0, slide);
   renderImageList();
+}
+
+async function reGuessCurrentOrder() {
+  if (!state.slides.length) return;
+  const files = state.slides.map((slide) => slide.file);
+  await handleImages(files);
 }
 
 function renderImageList() {
@@ -519,10 +587,13 @@ async function loadFfmpeg() {
 
       setStatus(els.ffmpegStatus, "Loading core");
       setProgress("load", 0.45);
+      const classWorkerURL = new URL("./vendor/ffmpeg/package/dist/esm/worker.js", window.location.href).toString();
+      const coreURL = new URL("./vendor/core/package/dist/esm/ffmpeg-core.js", window.location.href).toString();
+      const wasmURL = new URL("./vendor/core/package/dist/esm/ffmpeg-core.wasm", window.location.href).toString();
       await ffmpeg.load({
-        classWorkerURL: "./vendor/ffmpeg/package/dist/esm/worker.js",
-        coreURL: "./vendor/core/package/dist/esm/ffmpeg-core.js",
-        wasmURL: "./vendor/core/package/dist/esm/ffmpeg-core.wasm",
+        classWorkerURL,
+        coreURL,
+        wasmURL,
       });
 
       state.ffmpeg = { ffmpeg, fetchFile };
@@ -725,6 +796,7 @@ async function preview() {
     const settings = readSettings();
     const { blob, duration } = await recordTimeline(settings, 12, "preview");
     const previewBlob = await muxPreview(blob, settings, duration);
+    state.lastPreviewBlob = previewBlob;
     const url = URL.createObjectURL(previewBlob);
     state.objectUrls.push(url);
     els.previewVideo.src = url;
@@ -744,6 +816,7 @@ async function exportVideo() {
       settings,
       state.voiceDuration && state.voiceDuration > 0 ? state.voiceDuration : duration
     );
+    state.lastExportBlob = outputBlob;
     const url = URL.createObjectURL(outputBlob);
     state.objectUrls.push(url);
     els.downloadLink.href = url;
@@ -797,7 +870,8 @@ async function fileFromUrl(url) {
 
 async function loadSampleAssets() {
   log("Loading sample assets...");
-  const imageFiles = await Promise.all(SAMPLE_ASSETS.images.map(fileFromUrl));
+  const imageZip = await fileFromUrl(SAMPLE_ASSETS.imagesZip);
+  const imageFiles = await extractImagesFromZip(imageZip);
   await handleImages(imageFiles);
 
   state.voiceFile = await fileFromUrl(SAMPLE_ASSETS.voice);
@@ -810,10 +884,55 @@ async function loadSampleAssets() {
   log("Sample assets ready.");
 }
 
+async function blobToBase64(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  let binary = "";
+  const bytes = new Uint8Array(arrayBuffer);
+  const chunkSize = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
+async function runAutoMode() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("autoload")) return;
+
+  try {
+    await loadSampleAssets();
+
+    if (params.get("encoder") !== "0") {
+      await loadFfmpeg();
+    }
+
+    if (params.get("autopreview") === "1") {
+      await preview();
+    }
+
+    if (params.get("autoexport") === "1") {
+      await exportVideo();
+      if (params.get("expose") === "1" && state.lastExportBlob) {
+        window.__AUTO_EXPORT_BASE64__ = await blobToBase64(state.lastExportBlob);
+        window.__AUTO_EXPORT_NAME__ = els.downloadLink.download || "slideshow-export.mp4";
+      }
+    }
+
+    window.__AUTO_RUN_DONE__ = true;
+  } catch (error) {
+    window.__AUTO_RUN_ERROR__ = error instanceof Error ? error.message : String(error);
+    throw error;
+  }
+}
+
 function bindEvents() {
   els.imagesInput.addEventListener("change", async (event) => {
     if (event.target.files?.length) {
-      await handleImages(event.target.files);
+      const normalized = await normalizeImageInputs(event.target.files);
+      await handleImages(normalized);
     }
   });
 
@@ -841,8 +960,12 @@ function bindEvents() {
 
   els.guessOrderBtn.addEventListener("click", async () => {
     if (els.imagesInput.files?.length) {
-      await handleImages(els.imagesInput.files);
+      const normalized = await normalizeImageInputs(els.imagesInput.files);
+      await handleImages(normalized);
+      return;
     }
+
+    await reGuessCurrentOrder();
   });
 
   els.loadSampleBtn.addEventListener("click", () => loadSampleAssets().catch(handleError));
@@ -869,3 +992,4 @@ function handleError(error) {
 populateTransitions();
 bindEvents();
 log("App ready. Load images, audio tracks, then preview or export.");
+runAutoMode().catch(handleError);
