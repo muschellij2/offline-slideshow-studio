@@ -16,6 +16,7 @@ const els = {
   imagesInput: document.querySelector("#images-input"),
   voiceInput: document.querySelector("#voice-input"),
   musicInput: document.querySelector("#music-input"),
+  sampleToolbar: document.querySelector("#sample-toolbar"),
   loadSampleBtn: document.querySelector("#load-sample-btn"),
   imageList: document.querySelector("#image-list"),
   defaultTransitionSelect: document.querySelector("#default-transition-select"),
@@ -96,6 +97,16 @@ function setProgress(kind, value) {
 function setButtonState(kind, disabled) {
   if (kind === "preview") els.previewBtn.disabled = disabled;
   if (kind === "export") els.exportBtn.disabled = disabled;
+}
+
+function isLocalHost() {
+  const host = window.location.hostname;
+  return host === "localhost" || host === "127.0.0.1" || host === "";
+}
+
+function updateLocalOnlyUi() {
+  if (!els.sampleToolbar) return;
+  els.sampleToolbar.hidden = !isLocalHost();
 }
 
 function populateTransitions() {
@@ -1330,6 +1341,7 @@ function handleError(error) {
 
 populateTransitions();
 bindEvents();
+updateLocalOnlyUi();
 setButtonState("preview", false);
 setButtonState("export", false);
 updateTimingSummary();
