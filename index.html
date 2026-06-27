@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Offline Slideshow Studio</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Local-only browser app</p>
+        <h1>Offline Slideshow Studio</h1>
+        <p class="subtitle">
+          Build a slideshow video from images plus two audio tracks entirely in the browser.
+          No uploaded media is sent to an application server.
+        </p>
+      </div>
+      <div class="status-card">
+        <div><span>Encoder</span><strong id="ffmpeg-status">Not loaded</strong></div>
+        <div><span>Preview</span><strong id="preview-status">Idle</strong></div>
+        <div><span>Export</span><strong id="export-status">Not started</strong></div>
+      </div>
+    </header>
+
+    <main class="top-stack">
+      <section class="panel inputs-panel">
+        <h2>1. Inputs</h2>
+        <div class="toolbar">
+          <button id="load-sample-btn" type="button">Load sample assets</button>
+        </div>
+        <div class="inputs-grid">
+          <label class="field">
+            <span>Images</span>
+            <input id="images-input" type="file" accept="image/*" multiple />
+            <small>Natural filename sort is used as the default guessed order.</small>
+          </label>
+
+          <label class="field">
+            <span>Primary audio overlay (wav/mp3)</span>
+            <input id="voice-input" type="file" accept=".wav,.mp3,audio/wav,audio/mpeg" />
+          </label>
+
+          <label class="field">
+            <span>Background music (wav recommended)</span>
+            <input id="music-input" type="file" accept=".wav,.mp3,audio/wav,audio/mpeg" />
+          </label>
+        </div>
+      </section>
+      
+      <div class="grid">
+
+      <section class="panel">
+        <h2>2. Order and transitions</h2>
+        <div class="toolbar">
+          <button id="guess-order-btn" type="button">Re-guess order</button>
+          <button id="apply-default-transition-btn" type="button">Apply global transition</button>
+        </div>
+        <div id="image-list" class="image-list empty">
+          Add images to begin.
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>3. Video settings</h2>
+        <div class="two-col">
+          <label class="field">
+            <span>Width</span>
+            <input id="width-input" type="number" min="320" step="2" value="1280" />
+          </label>
+          <label class="field">
+            <span>Height</span>
+            <input id="height-input" type="number" min="240" step="2" value="720" />
+          </label>
+          <label class="field">
+            <span>FPS</span>
+            <input id="fps-input" type="number" min="12" max="60" value="30" />
+          </label>
+          <label class="field">
+            <span>Aspect fit</span>
+            <select id="fit-select">
+              <option value="contain" selected>Contain</option>
+              <option value="cover">Cover</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Seconds per image (auto)</span>
+            <input id="duration-input" type="number" min="0.01" step="0.01" value="3" readonly />
+          </label>
+          <label class="field">
+            <span>Transition duration (sec)</span>
+            <input id="transition-duration-input" type="number" min="0" step="0.1" value="0.8" />
+          </label>
+          <label class="field">
+            <span>Default transition</span>
+            <select id="default-transition-select"></select>
+          </label>
+          <label class="field">
+            <span>Output format</span>
+            <select id="output-format-select">
+              <option value="mp4" selected>MP4</option>
+              <option value="webm">WebM</option>
+              <option value="gif">GIF</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>4. Audio mix</h2>
+        <div class="two-col">
+          <label class="field">
+            <span>Overlay gain</span>
+            <input id="voice-volume-input" type="number" min="0" step="0.05" value="1" />
+          </label>
+          <label class="field">
+            <span>Music gain</span>
+            <input id="music-volume-input" type="number" min="0" step="0.05" value="0.35" />
+          </label>
+          <label class="field">
+            <span>Music start time (sec)</span>
+            <input id="music-start-input" type="number" min="0" step="0.1" value="0" />
+          </label>
+          <label class="field">
+            <span>Music fade-in duration (sec)</span>
+            <input id="music-fade-input" type="number" min="0" step="0.1" value="1.5" />
+          </label>
+        </div>
+        <p class="note">
+          Background music starts at the requested timestamp, fades in for the given duration,
+          and is mixed beneath the primary overlay track. The overlay audio determines the
+          video length, and slide durations are auto-computed from that length.
+        </p>
+      </section>
+
+      <section class="panel preview-panel">
+        <h2>5. Preview and export</h2>
+        <div class="toolbar">
+          <button id="load-ffmpeg-btn" type="button">Load encoder</button>
+          <button id="preview-btn" type="button">Preview first 12 seconds</button>
+          <button id="export-btn" type="button" class="primary">Export video</button>
+        </div>
+        <div class="progress-grid">
+          <label class="field">
+            <span>Encoder load</span>
+            <progress id="load-progress-bar" max="1" value="0"></progress>
+          </label>
+          <label class="field">
+            <span>Preview</span>
+            <progress id="preview-progress-bar" max="1" value="0"></progress>
+          </label>
+          <label class="field">
+            <span>Export</span>
+            <progress id="export-progress-bar" max="1" value="0"></progress>
+          </label>
+        </div>
+        <canvas id="preview-canvas" width="1280" height="720"></canvas>
+        <p class="readonly-note">Preview appears in the video player below. The canvas is used only as an internal render surface.</p>
+        <video id="preview-video" controls playsinline></video>
+        <pre id="log-output" class="log-output"></pre>
+        <a id="download-link" class="download-link hidden" download>Download export</a>
+      </section>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
