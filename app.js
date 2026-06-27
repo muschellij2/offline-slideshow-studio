@@ -91,6 +91,12 @@ function setButtonState(kind, disabled) {
   if (kind === "export") els.exportBtn.disabled = disabled;
 }
 
+function updateEncoderDependentButtons() {
+  const disabled = !state.ffmpegLoaded || Boolean(state.ffmpegLoadPromise);
+  setButtonState("preview", disabled);
+  setButtonState("export", disabled);
+}
+
 function populateTransitions() {
   TRANSITIONS.forEach((transition) => {
     const option = document.createElement("option");
@@ -359,6 +365,39 @@ function getMimeType(format) {
   return candidates.find((mime) => MediaRecorder.isTypeSupported(mime)) || "";
 }
 
+function getCaptureBitrate(settings, isPreview = false) {
+  const pixelFactor = (settings.width * settings.height) / (1280 * 720);
+  const fpsFactor = settings.fps / 30;
+  const base = isPreview ? 1_200_000 : 2_000_000;
+  return Math.max(600_000, Math.round(base * pixelFactor * fpsFactor));
+}
+
+function getNativeRecorderMimeType(format) {
+  const webmCandidates = [
+    "video/webm;codecs=vp8,opus",
+    "video/webm;codecs=vp9,opus",
+    "video/webm",
+  ];
+
+  if (format === "mp4") {
+    const mp4Candidates = [
+      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+      "video/mp4",
+    ];
+    return mp4Candidates.find((mime) => MediaRecorder.isTypeSupported(mime)) || "";
+  }
+
+  if (format === "webm") {
+    return webmCandidates.find((mime) => MediaRecorder.isTypeSupported(mime)) || "";
+  }
+
+  return "";
+}
+
+function isNativeExportSupported(format) {
+  return Boolean(getNativeRecorderMimeType(format));
+}
+
 function updateCanvasSize(width, height) {
   els.canvas.width = width;
   els.canvas.height = height;
@@ -521,15 +560,86 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function recordTimeline(settings, previewLimit = null, progressKind = "preview") {
+async function createMixedAudioTrack(settings) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) {
+    throw new Error("Web Audio is not available in this browser.");
+  }
+
+  const audioContext = new AudioContextClass();
+  const destination = audioContext.createMediaStreamDestination();
+  let voiceSource = null;
+  let musicSource = null;
+
+  if (state.voiceFile) {
+    const voiceBuffer = await audioContext.decodeAudioData(await state.voiceFile.arrayBuffer());
+    voiceSource = audioContext.createBufferSource();
+    voiceSource.buffer = voiceBuffer;
+    const voiceGain = audioContext.createGain();
+    voiceGain.gain.value = settings.voiceVolume;
+    voiceSource.connect(voiceGain).connect(destination);
+  }
+
+  if (state.musicFile) {
+    const musicBuffer = await audioContext.decodeAudioData(await state.musicFile.arrayBuffer());
+    musicSource = audioContext.createBufferSource();
+    musicSource.buffer = musicBuffer;
+    const musicGain = audioContext.createGain();
+    musicGain.gain.setValueAtTime(0, 0);
+    if (settings.musicStart > 0) {
+      musicGain.gain.setValueAtTime(0, settings.musicStart);
+    }
+    if (settings.musicFade > 0) {
+      musicGain.gain.linearRampToValueAtTime(
+        settings.musicVolume,
+        settings.musicStart + settings.musicFade
+      );
+    } else {
+      musicGain.gain.setValueAtTime(settings.musicVolume, settings.musicStart);
+    }
+    musicSource.connect(musicGain).connect(destination);
+  }
+
+  await audioContext.resume();
+  voiceSource?.start(0);
+  musicSource?.start(settings.musicStart);
+
+  return {
+    audioContext,
+    destination,
+    stop() {
+      try { voiceSource?.stop(); } catch {}
+      try { musicSource?.stop(); } catch {}
+      audioContext.close().catch(() => {});
+    },
+  };
+}
+
+async function recordTimeline(settings, previewLimit = null, progressKind = "preview", format = "webm") {
   if (state.slides.length === 0) {
     throw new Error("No images selected.");
   }
 
   updateCanvasSize(settings.width, settings.height);
   const timeline = buildTimeline(settings, previewLimit);
-  const stream = els.canvas.captureStream(settings.fps);
-  const recorder = new MediaRecorder(stream, { mimeType: getMimeType(settings.outputFormat) });
+  const videoStream = els.canvas.captureStream(settings.fps);
+  const audioSession = await createMixedAudioTrack(settings);
+  const combinedStream = new MediaStream([
+    ...videoStream.getVideoTracks(),
+    ...audioSession.destination.stream.getAudioTracks(),
+  ]);
+  const mimeType = format === "webm"
+    ? getNativeRecorderMimeType("webm")
+    : getNativeRecorderMimeType(settings.outputFormat);
+  if (!mimeType) {
+    audioSession.stop();
+    throw new Error(`Native ${format.toUpperCase()} recording is not supported in this browser.`);
+  }
+
+  const recorder = new MediaRecorder(combinedStream, {
+    mimeType,
+    videoBitsPerSecond: getCaptureBitrate(settings, previewLimit !== null),
+  });
   const chunks = [];
 
   recorder.ondataavailable = (event) => {
@@ -543,6 +653,7 @@ async function recordTimeline(settings, previewLimit = null, progressKind = "pre
   recorder.start();
   setStatus(els.previewStatus, previewLimit ? "Rendering preview" : "Rendering frames");
   setProgress(progressKind, 0);
+  log(`MediaRecorder bitrate: ${recorder.videoBitsPerSecond || getCaptureBitrate(settings, previewLimit !== null)} bps`);
 
   const frameDurationMs = 1000 / settings.fps;
   const startTime = performance.now();
@@ -558,9 +669,11 @@ async function recordTimeline(settings, previewLimit = null, progressKind = "pre
   drawTimelineAt(timeline.duration, timeline, settings);
   recorder.stop();
   const blob = await finished;
+  audioSession.stop();
+  combinedStream.getTracks().forEach((track) => track.stop());
   setProgress(progressKind, 1);
   setStatus(els.previewStatus, previewLimit ? "Preview ready" : "Frame render done");
-  return { blob, duration: timeline.duration };
+  return { blob, duration: timeline.duration, mimeType };
 }
 
 async function loadFfmpeg() {
@@ -600,6 +713,7 @@ async function loadFfmpeg() {
       state.ffmpegLoaded = true;
       setStatus(els.ffmpegStatus, "Loaded");
       setProgress("load", 1);
+      updateEncoderDependentButtons();
       log("ffmpeg.wasm ready.");
       return state.ffmpeg;
     } catch (error) {
@@ -609,6 +723,7 @@ async function loadFfmpeg() {
     } finally {
       setButtonState("load", false);
       state.ffmpegLoadPromise = null;
+      updateEncoderDependentButtons();
     }
   })();
 
@@ -675,10 +790,16 @@ function buildMuxArgs({
     args.push(
       "-c:v",
       "libx264",
+      "-preset",
+      "ultrafast",
+      "-tune",
+      "stillimage",
+      "-crf",
+      "30",
       "-c:a",
       "aac",
       "-b:a",
-      "192k",
+      "128k",
       "-pix_fmt",
       "yuv420p",
       "-movflags",
@@ -708,6 +829,15 @@ async function transcodeExport(recordedBlob, settings, durationSeconds) {
   const { ffmpeg, fetchFile } = await loadFfmpeg();
   setProgress("export", 0);
   setStatus(els.exportStatus, "Preparing");
+
+  try { await ffmpeg.deleteFile("slideshow.webm"); } catch {}
+  try { await ffmpeg.deleteFile("voice.wav"); } catch {}
+  try { await ffmpeg.deleteFile("voice.mp3"); } catch {}
+  try { await ffmpeg.deleteFile("music.wav"); } catch {}
+  try { await ffmpeg.deleteFile("music.mp3"); } catch {}
+  try { await ffmpeg.deleteFile("export.mp4"); } catch {}
+  try { await ffmpeg.deleteFile("export.webm"); } catch {}
+  try { await ffmpeg.deleteFile("export.gif"); } catch {}
 
   await ffmpeg.writeFile("slideshow.webm", await fetchFile(recordedBlob));
   if (state.voiceFile) {
@@ -749,6 +879,13 @@ async function muxPreview(recordedBlob, settings, durationSeconds) {
   const { ffmpeg, fetchFile } = await loadFfmpeg();
   setProgress("preview", 0);
   setStatus(els.previewStatus, "Muxing preview audio");
+
+  try { await ffmpeg.deleteFile("preview-slideshow.webm"); } catch {}
+  try { await ffmpeg.deleteFile("preview-voice.wav"); } catch {}
+  try { await ffmpeg.deleteFile("preview-voice.mp3"); } catch {}
+  try { await ffmpeg.deleteFile("preview-music.wav"); } catch {}
+  try { await ffmpeg.deleteFile("preview-music.mp3"); } catch {}
+  try { await ffmpeg.deleteFile("preview.webm"); } catch {}
 
   await ffmpeg.writeFile("preview-slideshow.webm", await fetchFile(recordedBlob));
   if (state.voiceFile) {
@@ -794,10 +931,13 @@ async function preview() {
   setButtonState("preview", true);
   try {
     const settings = readSettings();
-    const { blob, duration } = await recordTimeline(settings, 12, "preview");
-    const previewBlob = await muxPreview(blob, settings, duration);
-    state.lastPreviewBlob = previewBlob;
-    const url = URL.createObjectURL(previewBlob);
+    const previewSettings = {
+      ...settings,
+      outputFormat: "webm",
+    };
+    const { blob } = await recordTimeline(previewSettings, 12, "preview", "webm");
+    state.lastPreviewBlob = blob;
+    const url = URL.createObjectURL(blob);
     state.objectUrls.push(url);
     els.previewVideo.src = url;
     els.previewVideo.load();
@@ -810,12 +950,16 @@ async function exportVideo() {
   setButtonState("export", true);
   try {
     const settings = readSettings();
-    const { blob, duration } = await recordTimeline(settings, null, "export");
-    const outputBlob = await transcodeExport(
-      blob,
-      settings,
-      state.voiceDuration && state.voiceDuration > 0 ? state.voiceDuration : duration
-    );
+    if (settings.outputFormat === "gif") {
+      throw new Error("GIF export is not supported in the current browser-only build.");
+    }
+
+    if (settings.outputFormat === "mp4" && !isNativeExportSupported("mp4")) {
+      throw new Error("MP4 export is not supported in this browser without a different encoder stack. Use WebM for now.");
+    }
+
+    const { blob } = await recordTimeline(settings, null, "export", settings.outputFormat);
+    const outputBlob = blob;
     state.lastExportBlob = outputBlob;
     const url = URL.createObjectURL(outputBlob);
     state.objectUrls.push(url);
@@ -991,5 +1135,7 @@ function handleError(error) {
 
 populateTransitions();
 bindEvents();
+setButtonState("preview", false);
+setButtonState("export", false);
 log("App ready. Load images, audio tracks, then preview or export.");
 runAutoMode().catch(handleError);
