@@ -168,6 +168,11 @@ button.primary {
   margin-bottom: 12px;
 }
 
+.compact-toolbar {
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
 .progress-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -258,6 +263,10 @@ button.primary {
 
 .transition-select {
   width: 140px;
+}
+
+.motion-select {
+  width: 150px;
 }
 
 .duration-input {
@@ -481,7 +490,7 @@ button.primary {
 
 .preview-settings-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+  grid-template-columns: minmax(360px, 480px) minmax(0, 760px);
   gap: 16px;
   align-items: start;
 }
@@ -489,6 +498,10 @@ button.primary {
 .inset-panel {
   padding: 14px;
   background: var(--panel-2);
+}
+
+.preview-output-pane {
+  max-width: 760px;
 }
 
 #preview-canvas,
@@ -506,6 +519,7 @@ button.primary {
 
 #preview-video {
   margin-top: 8px;
+  max-height: 420px;
 }
 
 #preview-progress-bar,

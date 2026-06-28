@@ -60,6 +60,7 @@
         <div class="toolbar">
           <button id="guess-order-btn" type="button">Re-guess order</button>
           <button id="apply-default-transition-btn" type="button">Apply global transition</button>
+          <button id="apply-default-motion-btn" type="button">Apply global motion</button>
         </div>
         <div id="image-list" class="image-list empty">
           Add images to begin.
@@ -157,6 +158,10 @@
                 <select id="default-transition-select"></select>
               </label>
               <label class="field">
+                <span>Default motion</span>
+                <select id="default-motion-select"></select>
+              </label>
+              <label class="field">
                 <span>Output format</span>
                 <select id="output-format-select">
                   <option value="mp4" selected>MP4</option>
@@ -167,7 +172,7 @@
             </div>
           </div>
 
-          <div>
+          <div class="preview-output-pane">
             <div class="toolbar">
               <button id="preview-btn" type="button">Preview first 12 seconds</button>
               <button id="export-btn" type="button" class="primary">Export video</button>

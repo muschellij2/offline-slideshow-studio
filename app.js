@@ -12,6 +12,18 @@ const TRANSITIONS = [
   { value: "zoom-out", label: "Zoom out" },
 ];
 
+const MOTION_PRESETS = [
+  { value: "none", label: "Still" },
+  { value: "ken-burns-in", label: "Ken Burns in" },
+  { value: "ken-burns-out", label: "Ken Burns out" },
+  { value: "pan-left-right", label: "Pan left → right" },
+  { value: "pan-right-left", label: "Pan right → left" },
+  { value: "pan-up-down", label: "Pan up → down" },
+  { value: "pan-down-up", label: "Pan down → up" },
+  { value: "drift-up-left", label: "Drift to up-left" },
+  { value: "drift-down-right", label: "Drift to down-right" },
+];
+
 const els = {
   imagesInput: document.querySelector("#images-input"),
   voiceInput: document.querySelector("#voice-input"),
@@ -22,8 +34,10 @@ const els = {
   loadSampleBtn: document.querySelector("#load-sample-btn"),
   imageList: document.querySelector("#image-list"),
   defaultTransitionSelect: document.querySelector("#default-transition-select"),
+  defaultMotionSelect: document.querySelector("#default-motion-select"),
   guessOrderBtn: document.querySelector("#guess-order-btn"),
   applyDefaultTransitionBtn: document.querySelector("#apply-default-transition-btn"),
+  applyDefaultMotionBtn: document.querySelector("#apply-default-motion-btn"),
   widthInput: document.querySelector("#width-input"),
   heightInput: document.querySelector("#height-input"),
   fpsInput: document.querySelector("#fps-input"),
@@ -132,6 +146,16 @@ function populateTransitions() {
   els.defaultTransitionSelect.value = "fade";
 }
 
+function populateMotions() {
+  MOTION_PRESETS.forEach((motion) => {
+    const option = document.createElement("option");
+    option.value = motion.value;
+    option.textContent = motion.label;
+    els.defaultMotionSelect.append(option);
+  });
+  els.defaultMotionSelect.value = "none";
+}
+
 function naturalCompare(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
@@ -147,6 +171,7 @@ function guessSortedSlides(files) {
       id: `${file.name}-${file.lastModified}-${index}`,
       file,
       transition: index === 0 ? "none" : els.defaultTransitionSelect.value,
+      motion: els.defaultMotionSelect.value || "none",
       duration: Number(els.durationInput.value) || 3,
       img: null,
       thumbUrl: null,
@@ -460,6 +485,12 @@ function renderImageList() {
           <span>Seconds</span>
           <input data-role="duration" class="duration-input" type="number" min="0.01" step="0.01" value="${slide.duration.toFixed(2)}" />
         </label>
+        <label class="field">
+          <span>Motion</span>
+          <select data-role="motion" class="motion-select">
+            ${MOTION_PRESETS.map((m) => `<option value="${m.value}" ${m.value === (slide.motion || "none") ? "selected" : ""}>${m.label}</option>`).join("")}
+          </select>
+        </label>
       </div>
       <div class="slide-actions">
         <button type="button" data-role="quick-preview" class="mini-button">Quick GIF</button>
@@ -470,6 +501,7 @@ function renderImageList() {
     const transitionSelect = meta.querySelector('[data-role="transition"]');
     const quickPreviewButton = meta.querySelector('[data-role="quick-preview"]');
     const durationInput = meta.querySelector('[data-role="duration"]');
+    const motionSelect = meta.querySelector('[data-role="motion"]');
 
     transitionSelect?.addEventListener("change", (event) => {
       slide.transition = event.target.value;
@@ -479,6 +511,11 @@ function renderImageList() {
     durationInput.addEventListener("change", (event) => {
       slide.duration = Math.max(0.01, Number(event.target.value) || 3);
       event.target.value = slide.duration.toFixed(2);
+      updateTimingSummary();
+    });
+
+    motionSelect.addEventListener("change", (event) => {
+      slide.motion = event.target.value;
       updateTimingSummary();
     });
 
@@ -523,6 +560,9 @@ function applySettingsToUi(settings = {}) {
   if (typeof settings.defaultTransition === "string") {
     els.defaultTransitionSelect.value = settings.defaultTransition;
   }
+  if (typeof settings.defaultMotion === "string") {
+    els.defaultMotionSelect.value = settings.defaultMotion;
+  }
   if (typeof settings.outputFormat === "string") {
     els.outputFormatSelect.value = settings.outputFormat;
   }
@@ -547,12 +587,14 @@ function buildConfigPayload() {
     settings: {
       ...readSettings(),
       defaultTransition: els.defaultTransitionSelect.value,
+      defaultMotion: els.defaultMotionSelect.value,
     },
     slides: state.slides.map((slide, index) => ({
       index,
       name: slide.file.name,
       duration: Math.max(0.01, Number(slide.duration) || 0.01),
       transition: slide.transition,
+      motion: slide.motion || "none",
     })),
   };
 }
@@ -597,6 +639,9 @@ function applySlideConfig(slideConfigs = []) {
 
     if (Number.isFinite(entry.duration)) {
       slide.duration = Math.max(0.01, entry.duration);
+    }
+    if (typeof entry.motion === "string") {
+      slide.motion = entry.motion;
     }
     if (typeof entry.transition === "string") {
       slide.transition = index === 0 ? "none" : entry.transition;
@@ -693,6 +738,11 @@ function easeInOut(t) {
   return t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;
 }
 
+function smootherStep(t) {
+  const clamped = Math.max(0, Math.min(1, t));
+  return clamped * clamped * clamped * (clamped * (clamped * 6 - 15) + 10);
+}
+
 function drawImageFit(ctx, img, width, height, mode = "contain", alpha = 1, transform = {}) {
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -713,74 +763,154 @@ function drawImageFit(ctx, img, width, height, mode = "contain", alpha = 1, tran
   ctx.restore();
 }
 
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function getSlideMotionKeyframes(slide, settings) {
+  const motion = slide.motion || "none";
+  const width = settings.width;
+  const height = settings.height;
+  const panX = width * 0.045;
+  const panY = height * 0.045;
+
+  switch (motion) {
+    case "ken-burns-in":
+      return {
+        start: { scale: 1.02, x: panX * 0.35, y: panY * 0.25 },
+        end: { scale: 1.10, x: -panX * 0.35, y: -panY * 0.25 },
+      };
+    case "ken-burns-out":
+      return {
+        start: { scale: 1.10, x: -panX * 0.35, y: -panY * 0.25 },
+        end: { scale: 1.02, x: panX * 0.35, y: panY * 0.25 },
+      };
+    case "pan-left-right":
+      return {
+        start: { scale: 1.06, x: -panX, y: 0 },
+        end: { scale: 1.06, x: panX, y: 0 },
+      };
+    case "pan-right-left":
+      return {
+        start: { scale: 1.06, x: panX, y: 0 },
+        end: { scale: 1.06, x: -panX, y: 0 },
+      };
+    case "pan-up-down":
+      return {
+        start: { scale: 1.06, x: 0, y: -panY },
+        end: { scale: 1.06, x: 0, y: panY },
+      };
+    case "pan-down-up":
+      return {
+        start: { scale: 1.06, x: 0, y: panY },
+        end: { scale: 1.06, x: 0, y: -panY },
+      };
+    case "drift-up-left":
+      return {
+        start: { scale: 1.08, x: panX * 0.35, y: panY * 0.35 },
+        end: { scale: 1.10, x: -panX * 0.65, y: -panY * 0.65 },
+      };
+    case "drift-down-right":
+      return {
+        start: { scale: 1.08, x: -panX * 0.35, y: -panY * 0.35 },
+        end: { scale: 1.10, x: panX * 0.65, y: panY * 0.65 },
+      };
+    default:
+      return {
+        start: { scale: 1, x: 0, y: 0 },
+        end: { scale: 1, x: 0, y: 0 },
+      };
+  }
+}
+
+function getSlideMotionTransform(slide, progress, settings) {
+  const t = smootherStep(progress);
+  const { start, end } = getSlideMotionKeyframes(slide, settings);
+  return {
+    scale: lerp(start.scale, end.scale, t),
+    x: lerp(start.x, end.x, t),
+    y: lerp(start.y, end.y, t),
+  };
+}
+
 function renderTransitionFrame(ctx, current, next, progress, settings) {
   const { width, height, fit } = settings;
   const eased = easeInOut(progress);
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, width, height);
+  const currentTransform = getSlideMotionTransform(current, 1, settings);
+  const nextTransform = getSlideMotionTransform(next, 0, settings);
 
   switch (next.transition) {
     case "none":
-      drawImageFit(ctx, next.img, width, height, fit);
+      drawImageFit(ctx, next.img, width, height, fit, 1, nextTransform);
       break;
     case "fade":
     case "crossfade":
-      drawImageFit(ctx, current.img, width, height, fit, 1 - eased);
-      drawImageFit(ctx, next.img, width, height, fit, eased);
+      drawImageFit(ctx, current.img, width, height, fit, 1 - eased, currentTransform);
+      drawImageFit(ctx, next.img, width, height, fit, eased, nextTransform);
       break;
     case "slide-left":
-      drawImageFit(ctx, current.img, width, height, fit, 1, { x: -width * eased });
-      drawImageFit(ctx, next.img, width, height, fit, 1, { x: width * (1 - eased) });
+      drawImageFit(ctx, current.img, width, height, fit, 1, { ...currentTransform, x: (currentTransform.x ?? 0) - width * eased });
+      drawImageFit(ctx, next.img, width, height, fit, 1, { ...nextTransform, x: (nextTransform.x ?? 0) + width * (1 - eased) });
       break;
     case "slide-right":
-      drawImageFit(ctx, current.img, width, height, fit, 1, { x: width * eased });
-      drawImageFit(ctx, next.img, width, height, fit, 1, { x: -width * (1 - eased) });
+      drawImageFit(ctx, current.img, width, height, fit, 1, { ...currentTransform, x: (currentTransform.x ?? 0) + width * eased });
+      drawImageFit(ctx, next.img, width, height, fit, 1, { ...nextTransform, x: (nextTransform.x ?? 0) - width * (1 - eased) });
       break;
     case "slide-up":
-      drawImageFit(ctx, current.img, width, height, fit, 1, { y: -height * eased });
-      drawImageFit(ctx, next.img, width, height, fit, 1, { y: height * (1 - eased) });
+      drawImageFit(ctx, current.img, width, height, fit, 1, { ...currentTransform, y: (currentTransform.y ?? 0) - height * eased });
+      drawImageFit(ctx, next.img, width, height, fit, 1, { ...nextTransform, y: (nextTransform.y ?? 0) + height * (1 - eased) });
       break;
     case "slide-down":
-      drawImageFit(ctx, current.img, width, height, fit, 1, { y: height * eased });
-      drawImageFit(ctx, next.img, width, height, fit, 1, { y: -height * (1 - eased) });
+      drawImageFit(ctx, current.img, width, height, fit, 1, { ...currentTransform, y: (currentTransform.y ?? 0) + height * eased });
+      drawImageFit(ctx, next.img, width, height, fit, 1, { ...nextTransform, y: (nextTransform.y ?? 0) - height * (1 - eased) });
       break;
     case "wipe-left":
-      drawImageFit(ctx, current.img, width, height, fit);
+      drawImageFit(ctx, current.img, width, height, fit, 1, currentTransform);
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, 0, width * eased, height);
       ctx.clip();
-      drawImageFit(ctx, next.img, width, height, fit);
+      drawImageFit(ctx, next.img, width, height, fit, 1, nextTransform);
       ctx.restore();
       break;
     case "wipe-right":
-      drawImageFit(ctx, current.img, width, height, fit);
+      drawImageFit(ctx, current.img, width, height, fit, 1, currentTransform);
       ctx.save();
       ctx.beginPath();
       ctx.rect(width * (1 - eased), 0, width * eased, height);
       ctx.clip();
-      drawImageFit(ctx, next.img, width, height, fit);
+      drawImageFit(ctx, next.img, width, height, fit, 1, nextTransform);
       ctx.restore();
       break;
     case "zoom-in":
-      drawImageFit(ctx, current.img, width, height, fit, 1 - eased);
-      drawImageFit(ctx, next.img, width, height, fit, eased, { scale: 1.12 - 0.12 * eased });
+      drawImageFit(ctx, current.img, width, height, fit, 1 - eased, currentTransform);
+      drawImageFit(ctx, next.img, width, height, fit, eased, { ...nextTransform, scale: (nextTransform.scale ?? 1) * (1.12 - 0.12 * eased) });
       break;
     case "zoom-out":
-      drawImageFit(ctx, current.img, width, height, fit, 1 - eased, { scale: 1 + 0.15 * eased });
-      drawImageFit(ctx, next.img, width, height, fit, eased);
+      drawImageFit(ctx, current.img, width, height, fit, 1 - eased, { ...currentTransform, scale: (currentTransform.scale ?? 1) * (1 + 0.15 * eased) });
+      drawImageFit(ctx, next.img, width, height, fit, eased, nextTransform);
       break;
     default:
-      drawImageFit(ctx, next.img, width, height, fit);
+      drawImageFit(ctx, next.img, width, height, fit, 1, nextTransform);
   }
 }
 
-function drawStillFrame(ctx, slide, settings) {
+function drawStillFrame(ctx, slide, settings, progress = 0) {
   ctx.clearRect(0, 0, settings.width, settings.height);
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, settings.width, settings.height);
-  drawImageFit(ctx, slide.img, settings.width, settings.height, settings.fit);
+  drawImageFit(
+    ctx,
+    slide.img,
+    settings.width,
+    settings.height,
+    settings.fit,
+    1,
+    getSlideMotionTransform(slide, progress, settings)
+  );
 }
 
 function buildTimeline(settings, previewLimit = null) {
@@ -846,7 +976,8 @@ function renderOverlayPreviewAt(time) {
   if (!item) return;
 
   if (item.type === "still") {
-    drawStillFrame(overlayCanvasCtx, state.slides[item.slideIndex], settings);
+    const stillProgress = item.end > item.start ? (time - item.start) / (item.end - item.start) : 0;
+    drawStillFrame(overlayCanvasCtx, state.slides[item.slideIndex], settings, stillProgress);
     els.overlayCurrentSlide.textContent = `Showing slide ${item.slideIndex + 1}`;
     return;
   }
@@ -1006,7 +1137,8 @@ function drawTimelineAt(time, timeline, settings) {
   if (!item) return;
 
   if (item.type === "still") {
-    drawStillFrame(canvasCtx, state.slides[item.slideIndex], settings);
+    const stillProgress = item.end > item.start ? (time - item.start) / (item.end - item.start) : 0;
+    drawStillFrame(canvasCtx, state.slides[item.slideIndex], settings, stillProgress);
     return;
   }
 
@@ -1525,6 +1657,14 @@ function applyDefaultTransitionToAll() {
   renderImageList();
 }
 
+function applyDefaultMotionToAll() {
+  const value = els.defaultMotionSelect.value;
+  state.slides.forEach((slide) => {
+    slide.motion = value;
+  });
+  renderImageList();
+}
+
 async function getAudioDuration(file) {
   const url = URL.createObjectURL(file);
 
@@ -1718,6 +1858,7 @@ function bindEvents() {
   });
 
   els.applyDefaultTransitionBtn.addEventListener("click", applyDefaultTransitionToAll);
+  els.applyDefaultMotionBtn.addEventListener("click", applyDefaultMotionToAll);
   els.exportConfigBtn.addEventListener("click", downloadConfig);
   els.previewBtn.addEventListener("click", () => preview().catch(handleError));
   els.exportBtn.addEventListener("click", () => exportVideo().catch(handleError));
@@ -1733,6 +1874,7 @@ function handleError(error) {
 }
 
 populateTransitions();
+populateMotions();
 bindEvents();
 updateLocalOnlyUi();
 setButtonState("preview", false);
