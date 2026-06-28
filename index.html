@@ -46,6 +46,11 @@
             <input id="music-input" type="file" accept=".wav,.mp3,audio/wav,audio/mpeg" />
           </label>
         </div>
+        <label class="field config-field">
+          <span>Configuration JSON</span>
+          <input id="config-input" type="file" accept=".json,application/json" />
+          <small>Load saved app settings and per-slide timing/order by filename.</small>
+        </label>
       </section>
       
       <div class="grid">
@@ -62,52 +67,7 @@
       </section>
 
       <section class="panel">
-        <h2>3. Video settings</h2>
-        <div class="two-col">
-          <label class="field">
-            <span>Width</span>
-            <input id="width-input" type="number" min="320" step="2" value="1280" />
-          </label>
-          <label class="field">
-            <span>Height</span>
-            <input id="height-input" type="number" min="240" step="2" value="720" />
-          </label>
-          <label class="field">
-            <span>FPS</span>
-            <input id="fps-input" type="number" min="12" max="60" value="30" />
-          </label>
-          <label class="field">
-            <span>Aspect fit</span>
-            <select id="fit-select">
-              <option value="contain" selected>Contain</option>
-              <option value="cover">Cover</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Default seconds per image</span>
-            <input id="duration-input" type="number" min="0.01" step="0.01" value="3" />
-          </label>
-          <label class="field">
-            <span>Transition duration (sec)</span>
-            <input id="transition-duration-input" type="number" min="0" step="0.1" value="0.8" />
-          </label>
-          <label class="field">
-            <span>Default transition</span>
-            <select id="default-transition-select"></select>
-          </label>
-          <label class="field">
-            <span>Output format</span>
-            <select id="output-format-select">
-              <option value="mp4" selected>MP4</option>
-              <option value="webm">WebM</option>
-              <option value="gif">GIF</option>
-            </select>
-          </label>
-        </div>
-      </section>
-
-      <section class="panel">
-        <h2>4. Audio mix</h2>
+        <h2>3. Audio mix</h2>
         <div class="two-col">
           <label class="field">
             <span>Overlay gain</span>
@@ -131,6 +91,20 @@
           and is mixed beneath the primary overlay track. The overlay audio determines the
           final video length.
         </p>
+        <div class="overlay-preview-panel">
+          <div class="overlay-preview-header">
+            <strong>Overlay audio preview</strong>
+            <span id="overlay-current-slide" class="muted-inline">No slide active</span>
+          </div>
+          <audio id="overlay-audio-player" controls preload="metadata"></audio>
+          <input id="overlay-timeline-slider" type="range" min="0" max="0" step="0.01" value="0" />
+          <div id="overlay-segment-markers" class="overlay-segment-markers"></div>
+          <div class="overlay-time-row">
+            <span id="overlay-current-time">0.00s</span>
+            <span id="overlay-total-time">0.00s</span>
+          </div>
+          <canvas id="overlay-preview-canvas" width="640" height="360"></canvas>
+        </div>
         <div class="timing-summary">
           <div><span>Overlay audio</span><strong id="timing-overlay">Not loaded</strong></div>
           <div><span>Requested stills</span><strong id="timing-stills">0.00s</strong></div>
@@ -140,31 +114,81 @@
         </div>
         <div class="toolbar timing-toolbar">
           <button id="reset-equal-fit-btn" type="button">Reset all slide durations to equal fit</button>
+          <button id="export-config-btn" type="button">Download config JSON</button>
         </div>
         <p id="timing-warning" class="timing-warning hidden"></p>
       </section>
 
       <section class="panel preview-panel">
-        <h2>5. Preview and export</h2>
-        <div class="toolbar">
-          <button id="preview-btn" type="button">Preview first 12 seconds</button>
-          <button id="export-btn" type="button" class="primary">Export video</button>
+        <h2>4. Preview and export</h2>
+        <div class="preview-settings-grid">
+          <div class="panel inset-panel">
+            <h3>Video settings</h3>
+            <div class="two-col">
+              <label class="field">
+                <span>Width</span>
+                <input id="width-input" type="number" min="320" step="2" value="1280" />
+              </label>
+              <label class="field">
+                <span>Height</span>
+                <input id="height-input" type="number" min="240" step="2" value="720" />
+              </label>
+              <label class="field">
+                <span>FPS</span>
+                <input id="fps-input" type="number" min="12" max="60" value="30" />
+              </label>
+              <label class="field">
+                <span>Aspect fit</span>
+                <select id="fit-select">
+                  <option value="contain" selected>Contain</option>
+                  <option value="cover">Cover</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Default seconds per image</span>
+                <input id="duration-input" type="number" min="0.01" step="0.01" value="3" />
+              </label>
+              <label class="field">
+                <span>Transition duration (sec)</span>
+                <input id="transition-duration-input" type="number" min="0" step="0.1" value="0.8" />
+              </label>
+              <label class="field">
+                <span>Default transition</span>
+                <select id="default-transition-select"></select>
+              </label>
+              <label class="field">
+                <span>Output format</span>
+                <select id="output-format-select">
+                  <option value="mp4" selected>MP4</option>
+                  <option value="webm">WebM</option>
+                  <option value="gif">GIF</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <div class="toolbar">
+              <button id="preview-btn" type="button">Preview first 12 seconds</button>
+              <button id="export-btn" type="button" class="primary">Export video</button>
+            </div>
+            <div class="progress-grid">
+              <label class="field">
+                <span>Preview</span>
+                <progress id="preview-progress-bar" max="1" value="0"></progress>
+              </label>
+              <label class="field">
+                <span>Export</span>
+                <progress id="export-progress-bar" max="1" value="0"></progress>
+              </label>
+            </div>
+            <canvas id="preview-canvas" width="1280" height="720"></canvas>
+            <p class="readonly-note">Preview appears in the video player below. The canvas is used only as an internal render surface.</p>
+            <video id="preview-video" controls playsinline></video>
+            <pre id="log-output" class="log-output"></pre>
+            <a id="download-link" class="download-link hidden" download>Download export</a>
+          </div>
         </div>
-        <div class="progress-grid">
-          <label class="field">
-            <span>Preview</span>
-            <progress id="preview-progress-bar" max="1" value="0"></progress>
-          </label>
-          <label class="field">
-            <span>Export</span>
-            <progress id="export-progress-bar" max="1" value="0"></progress>
-          </label>
-        </div>
-        <canvas id="preview-canvas" width="1280" height="720"></canvas>
-        <p class="readonly-note">Preview appears in the video player below. The canvas is used only as an internal render surface.</p>
-        <video id="preview-video" controls playsinline></video>
-        <pre id="log-output" class="log-output"></pre>
-        <a id="download-link" class="download-link hidden" download>Download export</a>
       </section>
       </div>
     </main>

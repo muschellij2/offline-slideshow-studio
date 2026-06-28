@@ -16,6 +16,8 @@ const els = {
   imagesInput: document.querySelector("#images-input"),
   voiceInput: document.querySelector("#voice-input"),
   musicInput: document.querySelector("#music-input"),
+  configInput: document.querySelector("#config-input"),
+  exportConfigBtn: document.querySelector("#export-config-btn"),
   sampleToolbar: document.querySelector("#sample-toolbar"),
   loadSampleBtn: document.querySelector("#load-sample-btn"),
   imageList: document.querySelector("#image-list"),
@@ -37,6 +39,13 @@ const els = {
   exportBtn: document.querySelector("#export-btn"),
   canvas: document.querySelector("#preview-canvas"),
   previewVideo: document.querySelector("#preview-video"),
+  overlayAudioPlayer: document.querySelector("#overlay-audio-player"),
+  overlayTimelineSlider: document.querySelector("#overlay-timeline-slider"),
+  overlaySegmentMarkers: document.querySelector("#overlay-segment-markers"),
+  overlayCurrentTime: document.querySelector("#overlay-current-time"),
+  overlayTotalTime: document.querySelector("#overlay-total-time"),
+  overlayCurrentSlide: document.querySelector("#overlay-current-slide"),
+  overlayPreviewCanvas: document.querySelector("#overlay-preview-canvas"),
   previewProgressBar: document.querySelector("#preview-progress-bar"),
   exportProgressBar: document.querySelector("#export-progress-bar"),
   logOutput: document.querySelector("#log-output"),
@@ -66,7 +75,10 @@ const state = {
   ffmpegLoaded: false,
   ffmpegLoadPromise: null,
   dragIndex: null,
+  imageUrls: [],
   objectUrls: [],
+  overlayAudioUrl: null,
+  pendingConfig: null,
   lastExportBlob: null,
   lastPreviewBlob: null,
 };
@@ -78,6 +90,7 @@ const SAMPLE_ASSETS = {
 };
 
 const canvasCtx = els.canvas.getContext("2d");
+const overlayCanvasCtx = els.overlayPreviewCanvas.getContext("2d");
 
 function log(message) {
   els.logOutput.textContent += `${message}\n`;
@@ -142,6 +155,10 @@ function guessSortedSlides(files) {
 
 function formatSeconds(seconds) {
   return `${seconds.toFixed(2)}s`;
+}
+
+function formatOverlaySeconds(seconds) {
+  return `${seconds.toFixed(1)}s`;
 }
 
 function getRequestedStillsDuration() {
@@ -224,6 +241,8 @@ function updateTimingSummary() {
     els.timingWarning.textContent = "";
     els.timingWarning.classList.add("hidden");
   }
+
+  updateOverlayTimelineUi();
 }
 
 function initializeSlideDurations() {
@@ -254,7 +273,7 @@ function setDefaultDurationFromOverlay(applyToSlides = false) {
 
 async function loadImageForSlide(slide) {
   const url = URL.createObjectURL(slide.file);
-  state.objectUrls.push(url);
+  state.imageUrls.push(url);
   slide.thumbUrl = url;
   slide.img = await new Promise((resolve, reject) => {
     const img = new Image();
@@ -266,17 +285,33 @@ async function loadImageForSlide(slide) {
 }
 
 async function handleImages(files) {
-  cleanupUrls();
+  cleanupImageUrls();
   const slides = guessSortedSlides(files);
   state.slides = await Promise.all(slides.map(loadImageForSlide));
   initializeSlideDurations();
+  if (state.pendingConfig?.slides?.length) {
+    applySlideConfig(state.pendingConfig.slides);
+  }
   updateTimingSummary();
   renderImageList();
 }
 
-function cleanupUrls() {
+function cleanupImageUrls() {
+  state.imageUrls.forEach((url) => URL.revokeObjectURL(url));
+  state.imageUrls = [];
+}
+
+function cleanupObjectUrls() {
   state.objectUrls.forEach((url) => URL.revokeObjectURL(url));
   state.objectUrls = [];
+}
+
+function clearOverlayAudioUrl() {
+  if (!state.overlayAudioUrl) return;
+  const idx = state.objectUrls.indexOf(state.overlayAudioUrl);
+  if (idx >= 0) state.objectUrls.splice(idx, 1);
+  URL.revokeObjectURL(state.overlayAudioUrl);
+  state.overlayAudioUrl = null;
 }
 
 function isZipFile(file) {
@@ -409,15 +444,18 @@ function renderImageList() {
 
     const meta = document.createElement("div");
     meta.className = "image-meta";
-    meta.innerHTML = `
-      <strong>${index + 1}. ${slide.file.name}</strong>
-      <div class="compact-controls">
-        <label class="field">
-          <span>Transition</span>
+    const transitionControl = index === 0
+      ? `<span class="muted-inline">No incoming transition for first slide</span>`
+      : `<label class="field">
+          <span>Transition in</span>
           <select data-role="transition" class="transition-select">
             ${TRANSITIONS.map((t) => `<option value="${t.value}" ${t.value === slide.transition ? "selected" : ""}>${t.label}</option>`).join("")}
           </select>
-        </label>
+        </label>`;
+    meta.innerHTML = `
+      <strong>${index + 1}. ${slide.file.name}</strong>
+      <div class="compact-controls">
+        ${transitionControl}
         <label class="field">
           <span>Seconds</span>
           <input data-role="duration" class="duration-input" type="number" min="0.01" step="0.01" value="${slide.duration.toFixed(2)}" />
@@ -433,7 +471,7 @@ function renderImageList() {
     const quickPreviewButton = meta.querySelector('[data-role="quick-preview"]');
     const durationInput = meta.querySelector('[data-role="duration"]');
 
-    transitionSelect.addEventListener("change", (event) => {
+    transitionSelect?.addEventListener("change", (event) => {
       slide.transition = event.target.value;
       updateTimingSummary();
     });
@@ -448,11 +486,7 @@ function renderImageList() {
       createSlideQuickPreview(index, quickPreviewButton).catch(handleError);
     });
 
-    if (index === 0) {
-      transitionSelect.value = "none";
-      transitionSelect.disabled = true;
-      slide.transition = "none";
-    }
+    if (index === 0) slide.transition = "none";
 
     item.append(thumb, meta);
     list.append(item);
@@ -473,6 +507,140 @@ function readSettings() {
     musicStart: Math.max(0, Number(els.musicStartInput.value) || 0),
     musicFade: Math.max(0, Number(els.musicFadeInput.value) || 1.5),
   };
+}
+
+function applySettingsToUi(settings = {}) {
+  if (Number.isFinite(settings.width)) els.widthInput.value = String(Math.max(320, settings.width));
+  if (Number.isFinite(settings.height)) els.heightInput.value = String(Math.max(240, settings.height));
+  if (Number.isFinite(settings.fps)) els.fpsInput.value = String(Math.max(12, settings.fps));
+  if (typeof settings.fit === "string") els.fitSelect.value = settings.fit;
+  if (Number.isFinite(settings.defaultDuration)) {
+    els.durationInput.value = String(Math.max(0.01, settings.defaultDuration));
+  }
+  if (Number.isFinite(settings.transitionDuration)) {
+    els.transitionDurationInput.value = String(Math.max(0, settings.transitionDuration));
+  }
+  if (typeof settings.defaultTransition === "string") {
+    els.defaultTransitionSelect.value = settings.defaultTransition;
+  }
+  if (typeof settings.outputFormat === "string") {
+    els.outputFormatSelect.value = settings.outputFormat;
+  }
+  if (Number.isFinite(settings.voiceVolume)) {
+    els.voiceVolumeInput.value = String(Math.max(0, settings.voiceVolume));
+  }
+  if (Number.isFinite(settings.musicVolume)) {
+    els.musicVolumeInput.value = String(Math.max(0, settings.musicVolume));
+  }
+  if (Number.isFinite(settings.musicStart)) {
+    els.musicStartInput.value = String(Math.max(0, settings.musicStart));
+  }
+  if (Number.isFinite(settings.musicFade)) {
+    els.musicFadeInput.value = String(Math.max(0, settings.musicFade));
+  }
+}
+
+function buildConfigPayload() {
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: {
+      ...readSettings(),
+      defaultTransition: els.defaultTransitionSelect.value,
+    },
+    slides: state.slides.map((slide, index) => ({
+      index,
+      name: slide.file.name,
+      duration: Math.max(0.01, Number(slide.duration) || 0.01),
+      transition: slide.transition,
+    })),
+  };
+}
+
+function reorderSlidesFromConfig(slideConfigs) {
+  const grouped = new Map();
+  state.slides.forEach((slide) => {
+    const list = grouped.get(slide.file.name) || [];
+    list.push(slide);
+    grouped.set(slide.file.name, list);
+  });
+
+  const ordered = [];
+  slideConfigs.forEach((entry) => {
+    const list = grouped.get(entry.name);
+    if (list?.length) ordered.push(list.shift());
+  });
+  grouped.forEach((list) => ordered.push(...list));
+
+  if (ordered.length === state.slides.length) {
+    state.slides = ordered;
+  }
+}
+
+function applySlideConfig(slideConfigs = []) {
+  if (!slideConfigs.length || !state.slides.length) return;
+
+  reorderSlidesFromConfig(slideConfigs);
+  const grouped = new Map();
+  slideConfigs.forEach((entry) => {
+    const list = grouped.get(entry.name) || [];
+    list.push(entry);
+    grouped.set(entry.name, list);
+  });
+
+  state.slides.forEach((slide, index) => {
+    const entry = grouped.get(slide.file.name)?.shift();
+    if (!entry) {
+      if (index === 0) slide.transition = "none";
+      return;
+    }
+
+    if (Number.isFinite(entry.duration)) {
+      slide.duration = Math.max(0.01, entry.duration);
+    }
+    if (typeof entry.transition === "string") {
+      slide.transition = index === 0 ? "none" : entry.transition;
+    } else if (index === 0) {
+      slide.transition = "none";
+    }
+  });
+}
+
+function applyConfig(config) {
+  if (!config || typeof config !== "object") {
+    throw new Error("Configuration file is not valid JSON.");
+  }
+
+  applySettingsToUi(config.settings || {});
+  state.pendingConfig = config;
+
+  if (state.slides.length) {
+    applySlideConfig(config.slides || []);
+    updateTimingSummary();
+    renderImageList();
+    return;
+  }
+
+  updateTimingSummary();
+}
+
+async function importConfigFile(file) {
+  const text = await file.text();
+  const config = JSON.parse(text);
+  applyConfig(config);
+  log(`Config loaded: ${file.name}`);
+}
+
+function downloadConfig() {
+  const payload = buildConfigPayload();
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  state.objectUrls.push(url);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "offline-slideshow-config.json";
+  link.click();
+  log("Config exported.");
 }
 
 function getMimeType(format) {
@@ -552,7 +720,7 @@ function renderTransitionFrame(ctx, current, next, progress, settings) {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, width, height);
 
-  switch (current.transition) {
+  switch (next.transition) {
     case "none":
       drawImageFit(ctx, next.img, width, height, fit);
       break;
@@ -655,6 +823,184 @@ function buildTimeline(settings, previewLimit = null) {
   };
 }
 
+function getTimelineForUi() {
+  return buildTimeline({
+    transitionDuration: Math.max(0, Number(els.transitionDurationInput.value) || 0),
+  }, null);
+}
+
+function renderOverlayPreviewAt(time) {
+  const duration = state.voiceDuration || getRequestedTimelineDuration();
+  els.overlayCurrentTime.textContent = formatOverlaySeconds(Math.min(time, duration));
+  if (!state.slides.length) return;
+
+  const settings = {
+    width: els.overlayPreviewCanvas.width,
+    height: els.overlayPreviewCanvas.height,
+    fit: els.fitSelect.value,
+    transitionDuration: Math.max(0, Number(els.transitionDurationInput.value) || 0),
+  };
+
+  const timeline = getTimelineForUi();
+  const item = timeline.items.find((entry) => time >= entry.start && time < entry.end) || timeline.items.at(-1);
+  if (!item) return;
+
+  if (item.type === "still") {
+    drawStillFrame(overlayCanvasCtx, state.slides[item.slideIndex], settings);
+    els.overlayCurrentSlide.textContent = `Showing slide ${item.slideIndex + 1}`;
+    return;
+  }
+
+  const progress = (time - item.start) / (item.end - item.start);
+  renderTransitionFrame(
+    overlayCanvasCtx,
+    state.slides[item.slideIndex],
+    state.slides[item.nextIndex],
+    progress,
+    settings
+  );
+  els.overlayCurrentSlide.textContent = `Transition into slide ${item.nextIndex + 1}`;
+}
+
+function updateOverlayTimelineUi() {
+  const duration = state.voiceDuration || 0;
+  els.overlayTimelineSlider.max = String(duration);
+  if (Number(els.overlayTimelineSlider.value || 0) > duration) {
+    els.overlayTimelineSlider.value = String(duration);
+  }
+  els.overlayTotalTime.textContent = formatOverlaySeconds(duration);
+  els.overlaySegmentMarkers.innerHTML = "";
+
+  if (!duration || !state.slides.length) {
+    els.overlayCurrentSlide.textContent = "No slide active";
+    els.overlayCurrentTime.textContent = "0.0s";
+    overlayCanvasCtx.clearRect(0, 0, els.overlayPreviewCanvas.width, els.overlayPreviewCanvas.height);
+    return;
+  }
+
+  const timeline = getTimelineForUi();
+  timeline.items.forEach((item) => {
+    const marker = document.createElement("div");
+    marker.className = `overlay-segment ${item.type}`;
+    marker.style.left = `${(item.start / duration) * 100}%`;
+    marker.style.width = `${((item.end - item.start) / duration) * 100}%`;
+    marker.title = item.type === "still"
+      ? `Slide ${item.slideIndex + 1}: ${formatSeconds(item.end - item.start)}`
+      : `Transition into slide ${item.nextIndex + 1}: ${formatSeconds(item.end - item.start)}`;
+    els.overlaySegmentMarkers.append(marker);
+  });
+
+  const stillItems = timeline.items.filter((item) => item.type === "still");
+  for (let i = 0; i < stillItems.length - 1; i += 1) {
+    const current = stillItems[i];
+    const boundary = document.createElement("button");
+    boundary.type = "button";
+    boundary.className = "overlay-boundary-handle";
+    boundary.style.left = `${(current.end / duration) * 100}%`;
+    boundary.title = `Drag boundary between slides ${current.slideIndex + 1} and ${current.slideIndex + 2}`;
+    boundary.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      startAdjacentBoundaryDrag(event, current.slideIndex, current.slideIndex + 1, duration);
+    });
+    els.overlaySegmentMarkers.append(boundary);
+  }
+
+  const requestedTotal = getRequestedTimelineDuration();
+  const endPosition = Math.min(requestedTotal, duration);
+  const lastBoundary = document.createElement("button");
+  lastBoundary.type = "button";
+  lastBoundary.className = "overlay-boundary-handle overlay-boundary-handle-end";
+  lastBoundary.style.left = `${duration > 0 ? (endPosition / duration) * 100 : 100}%`;
+  lastBoundary.title = "Drag to change the final slide duration";
+  lastBoundary.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    startEndBoundaryDrag(event, duration);
+  });
+  els.overlaySegmentMarkers.append(lastBoundary);
+
+  if (requestedTotal < duration) {
+    const endBuffer = document.createElement("div");
+    endBuffer.className = "overlay-end-buffer";
+    endBuffer.style.left = `${(requestedTotal / duration) * 100}%`;
+    endBuffer.style.width = `${((duration - requestedTotal) / duration) * 100}%`;
+    endBuffer.title = `Unused overlay time: ${formatSeconds(duration - requestedTotal)}`;
+    els.overlaySegmentMarkers.append(endBuffer);
+  }
+
+  renderOverlayPreviewAt(Number(els.overlayTimelineSlider.value || 0));
+}
+
+function startAdjacentBoundaryDrag(event, leftSlideIndex, rightSlideIndex, totalDuration) {
+  const leftSlide = state.slides[leftSlideIndex];
+  const rightSlide = state.slides[rightSlideIndex];
+  if (!leftSlide || !rightSlide) return;
+  const startX = event.clientX;
+  const leftStart = Math.max(0.01, Number(leftSlide.duration) || 0.01);
+  const rightStart = Math.max(0.01, Number(rightSlide.duration) || 0.01);
+  const containerWidth = els.overlaySegmentMarkers.clientWidth || 1;
+  els.overlaySegmentMarkers.setPointerCapture?.(event.pointerId);
+
+  const onMove = (moveEvent) => {
+    const deltaPx = moveEvent.clientX - startX;
+    const deltaSeconds = (deltaPx / containerWidth) * totalDuration;
+    const minDelta = -(leftStart - 0.01);
+    const maxDelta = rightStart - 0.01;
+    const boundedDelta = Math.max(minDelta, Math.min(maxDelta, deltaSeconds));
+
+    leftSlide.duration = leftStart + boundedDelta;
+    rightSlide.duration = rightStart - boundedDelta;
+    renderImageList();
+    updateTimingSummary();
+    renderOverlayPreviewAt(Number(els.overlayTimelineSlider.value || 0));
+  };
+
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    els.overlaySegmentMarkers.releasePointerCapture?.(event.pointerId);
+  };
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp, { once: true });
+}
+
+function startEndBoundaryDrag(event, totalDuration) {
+  const lastSlide = state.slides.at(-1);
+  if (!lastSlide) return;
+
+  const startX = event.clientX;
+  const startDuration = Math.max(0.01, Number(lastSlide.duration) || 0.01);
+  const containerWidth = els.overlaySegmentMarkers.clientWidth || 1;
+  const transitionBudget = getRequestedTransitionDuration();
+  const earlierStillBudget = state.slides
+    .slice(0, -1)
+    .reduce((sum, slide) => sum + Math.max(0.01, Number(slide.duration) || 0.01), 0);
+  const maxDuration = totalDuration > 0
+    ? Math.max(0.01, totalDuration - transitionBudget - earlierStillBudget)
+    : Number.POSITIVE_INFINITY;
+
+  els.overlaySegmentMarkers.setPointerCapture?.(event.pointerId);
+
+  const onMove = (moveEvent) => {
+    const deltaPx = moveEvent.clientX - startX;
+    const deltaSeconds = (deltaPx / containerWidth) * totalDuration;
+    const nextDuration = Math.max(0.01, Math.min(maxDuration, startDuration + deltaSeconds));
+    lastSlide.duration = nextDuration;
+    renderImageList();
+    updateTimingSummary();
+    renderOverlayPreviewAt(Number(els.overlayTimelineSlider.value || 0));
+  };
+
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    els.overlaySegmentMarkers.releasePointerCapture?.(event.pointerId);
+  };
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp, { once: true });
+}
+
 function drawTimelineAt(time, timeline, settings) {
   const item = timeline.items.find((entry) => time >= entry.start && time < entry.end) || timeline.items.at(-1);
   if (!item) return;
@@ -700,8 +1046,7 @@ async function createSlideQuickPreview(index, button) {
 
   const slide = state.slides[index];
   if (!slide) return;
-
-  const nextSlide = state.slides[index + 1] || slide;
+  const previousSlide = state.slides[index - 1] || slide;
   const previousLabel = button.textContent;
   button.disabled = true;
   button.textContent = "Building GIF...";
@@ -728,17 +1073,17 @@ async function createSlideQuickPreview(index, button) {
     };
 
     const holdFrames = 4;
-    const transitionFrames = slide.transition === "none" || nextSlide === slide ? 1 : 8;
+    const transitionFrames = index === 0 || slide.transition === "none" ? 1 : 8;
 
     for (let i = 0; i < holdFrames; i += 1) {
-      drawStillFrame(offscreenCtx, slide, quickSettings);
+      drawStillFrame(offscreenCtx, previousSlide, quickSettings);
       gif.addFrame(offscreenCanvas, { copy: true, delay: 120 });
     }
 
-    if (nextSlide !== slide) {
+    if (index > 0) {
       for (let i = 0; i < transitionFrames; i += 1) {
         const progress = transitionFrames === 1 ? 1 : i / (transitionFrames - 1);
-        renderTransitionFrame(offscreenCtx, slide, nextSlide, progress, quickSettings);
+        renderTransitionFrame(offscreenCtx, previousSlide, slide, progress, quickSettings);
         gif.addFrame(offscreenCanvas, { copy: true, delay: 90 });
       }
     }
@@ -1221,6 +1566,12 @@ async function loadSampleAssets() {
   state.voiceFile = await fileFromUrl(SAMPLE_ASSETS.voice);
   state.musicFile = await fileFromUrl(SAMPLE_ASSETS.music);
   state.voiceDuration = await getAudioDuration(state.voiceFile);
+  clearOverlayAudioUrl();
+  state.overlayAudioUrl = URL.createObjectURL(state.voiceFile);
+  state.objectUrls.push(state.overlayAudioUrl);
+  els.overlayAudioPlayer.src = state.overlayAudioUrl;
+  els.overlayAudioPlayer.load();
+  els.overlayTimelineSlider.value = "0";
   setDefaultDurationFromOverlay(true);
   updateTimingSummary();
   renderImageList();
@@ -1277,10 +1628,19 @@ function bindEvents() {
     }
   });
 
+  els.configInput.addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    importConfigFile(file).catch(handleError);
+  });
+
   els.voiceInput.addEventListener("change", (event) => {
     state.voiceFile = event.target.files?.[0] || null;
     if (!state.voiceFile) {
       state.voiceDuration = null;
+      clearOverlayAudioUrl();
+      els.overlayAudioPlayer.removeAttribute("src");
+      els.overlayAudioPlayer.load();
       updateTimingSummary();
       renderImageList();
       return;
@@ -1289,6 +1649,12 @@ function bindEvents() {
     getAudioDuration(state.voiceFile)
       .then((duration) => {
         state.voiceDuration = duration;
+        clearOverlayAudioUrl();
+        state.overlayAudioUrl = URL.createObjectURL(state.voiceFile);
+        state.objectUrls.push(state.overlayAudioUrl);
+        els.overlayAudioPlayer.src = state.overlayAudioUrl;
+        els.overlayAudioPlayer.load();
+        els.overlayTimelineSlider.value = "0";
         setDefaultDurationFromOverlay(true);
         updateTimingSummary();
         renderImageList();
@@ -1298,6 +1664,32 @@ function bindEvents() {
 
   els.musicInput.addEventListener("change", (event) => {
     state.musicFile = event.target.files?.[0] || null;
+  });
+
+  els.overlayAudioPlayer.addEventListener("timeupdate", () => {
+    const time = els.overlayAudioPlayer.currentTime || 0;
+    els.overlayTimelineSlider.value = String(time);
+    renderOverlayPreviewAt(time);
+  });
+
+  els.overlayAudioPlayer.addEventListener("loadedmetadata", () => {
+    els.overlayTimelineSlider.value = "0";
+    renderOverlayPreviewAt(0);
+    log(`Overlay audio ready: ${state.voiceFile?.name || "audio"} (${formatSeconds(els.overlayAudioPlayer.duration || 0)})`);
+  });
+
+  els.overlayAudioPlayer.addEventListener("error", () => {
+    const mediaError = els.overlayAudioPlayer.error;
+    const detail = mediaError ? ` code ${mediaError.code}` : "";
+    handleError(new Error(`Overlay audio could not be played.${detail}`));
+  });
+
+  els.overlayTimelineSlider.addEventListener("input", () => {
+    const time = Number(els.overlayTimelineSlider.value || 0);
+    if (els.overlayAudioPlayer.src) {
+      els.overlayAudioPlayer.currentTime = time;
+    }
+    renderOverlayPreviewAt(time);
   });
 
   els.guessOrderBtn.addEventListener("click", async () => {
@@ -1326,6 +1718,7 @@ function bindEvents() {
   });
 
   els.applyDefaultTransitionBtn.addEventListener("click", applyDefaultTransitionToAll);
+  els.exportConfigBtn.addEventListener("click", downloadConfig);
   els.previewBtn.addEventListener("click", () => preview().catch(handleError));
   els.exportBtn.addEventListener("click", () => exportVideo().catch(handleError));
   els.quickPreviewCloseBtn.addEventListener("click", () => els.quickPreviewDialog.close());
@@ -1347,3 +1740,8 @@ setButtonState("export", false);
 updateTimingSummary();
 log("App ready. Load images or a ZIP, add audio, then preview or export.");
 runAutoMode().catch(handleError);
+
+window.addEventListener("beforeunload", () => {
+  cleanupImageUrls();
+  cleanupObjectUrls();
+});
